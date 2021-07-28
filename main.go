@@ -15,9 +15,7 @@ import (
 	"github.com/ro-tex/skydb"
 	"gitlab.com/NebulousLabs/errors"
 	"gitlab.com/SkynetLabs/skyd/node/api/client"
-	"gitlab.com/SkynetLabs/skyd/skymodules"
 	"go.sia.tech/siad/crypto"
-	"go.sia.tech/siad/types"
 )
 
 type (
