@@ -4,11 +4,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
+	"math/rand"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -16,19 +14,22 @@ import (
 	"github.com/ro-tex/skydb"
 	"gitlab.com/NebulousLabs/errors"
 	"gitlab.com/SkynetLabs/skyd/node/api/client"
+	"gitlab.com/SkynetLabs/skyd/skymodules"
 	"go.sia.tech/siad/crypto"
+	"go.sia.tech/siad/types"
 )
 
 type (
 	config struct {
-		Entropy [32]byte
-		Tweak   [32]byte
-		OwnName string
+		Entropy         [32]byte
+		Tweak           [32]byte
+		OwnName         string
+		SkydAddress     string
+		SkydApiPassword string
 	}
 
 	server struct {
 		Name         string    `json:"name"`
-		IP           string    `json:"ip"`
 		LastAnnounce time.Time `json:"last_announce"`
 	}
 )
@@ -61,41 +62,15 @@ func putServerList(db *skydb.SkyDB, list []server, tweak [32]byte, rev uint64) e
 	return nil
 }
 
-func getOwnIP() (string, error) {
-	resp, err := http.Get("https://api.ipify.org")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("failed to query api.ipify.org, status code %d", resp.StatusCode)
-		return "", errors.AddContext(err, msg)
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", errors.AddContext(err, "failed to read api.ipify.org response")
-	}
-	ip := string(bodyBytes)
-	match, err := regexp.MatchString("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$", ip)
-	if err != nil || !match {
-		msg := fmt.Sprintf("invalid ip received '%s'", ip)
-		return "", errors.AddContext(err, msg)
-	}
-	return ip, nil
-}
-
 func updateOwnRecord(list []server, ownName string) ([]server, error) {
-	ip, err := getOwnIP()
-	if err != nil {
-		return nil, errors.AddContext(err, "failed to get own ip")
-	}
 	for i := range list {
 		if list[i].Name == ownName {
-			list[i].IP = ip
 			list[i].LastAnnounce = time.Now()
 			return list, nil
 		}
 	}
 	self := server{
 		Name:         ownName,
-		IP:           ip,
 		LastAnnounce: time.Now(),
 	}
 	return append(list, self), nil
@@ -137,11 +112,36 @@ func getConfig() (config, error) {
 	}
 	bytes, err = hex.DecodeString(tweakStr)
 	if err != nil {
-		return config{}, errors.New("invalid SERVERLIST_TWEAK value")
+		return config{}, errors.AddContext(err, "invalid SERVERLIST_TWEAK value")
 	}
 	copy(cfg.Tweak[:], bytes)
 
+	cfg.SkydAddress = os.Getenv("SERVERLIST_SKYD")
+	if cfg.SkydAddress == "" {
+		cfg.SkydAddress = "localhost:9980"
+	}
+
+	cfg.SkydApiPassword = os.Getenv("SIA_API_PASSWORD")
+	if cfg.SkydApiPassword == "" {
+		return config{}, errors.New("failed to get api password. is SIA_API_PASSWORD env var defined?")
+	}
+
 	return cfg, nil
+}
+
+// checkSuccess fetches the list of servers and ensures that this server's
+// record was updated within the last 5 minutes.
+func checkSuccess(db *skydb.SkyDB, tweak [32]byte, ownName string) bool {
+	list, _, err := getServerList(db, tweak)
+	if err != nil {
+		return false
+	}
+	for _, s := range list {
+		if s.Name == ownName {
+			return s.LastAnnounce.After(time.Now().Add(-5 * time.Minute))
+		}
+	}
+	return false
 }
 
 func main() {
@@ -154,21 +154,45 @@ func main() {
 		log.Fatal(errors.AddContext(err, "failed to read config"))
 	}
 	sk, pk := crypto.GenerateKeyPairDeterministic(cfg.Entropy)
-	db, err := skydb.New(sk, pk, client.Options{})
+	opts := client.Options{
+		Address:   cfg.SkydAddress,
+		Password:  cfg.SkydApiPassword,
+		UserAgent: "Sia-Agent",
+	}
+	db, err := skydb.New(sk, pk, opts)
 	if err != nil {
 		log.Fatal(errors.AddContext(err, "failed to get skydb instance"))
 	}
-	list, rev, err := getServerList(db, cfg.Tweak)
-	if err != nil {
-		log.Fatal(errors.AddContext(err, "failed to get server list"))
+
+	// get the latest server list, update it and save it. then verify that we're
+	// in the list with a recent record. if that's not true sleep for a while
+	// and try again.
+	for {
+		list, rev, err := getServerList(db, cfg.Tweak)
+		if err != nil {
+			log.Fatal(errors.AddContext(err, "failed to get server list"))
+		}
+		updatedList, err := updateOwnRecord(list, cfg.OwnName)
+		if err != nil {
+			log.Fatal(errors.AddContext(err, "failed to update list"))
+		}
+		cleanList := removeOutdatedEntries(updatedList)
+		err = putServerList(db, cleanList, cfg.Tweak, rev+1)
+		if err != nil {
+			log.Fatal(errors.AddContext(err, "failed to update server list"))
+		}
+		if checkSuccess(db, cfg.Tweak, cfg.OwnName) {
+			break
+		}
+		// sleep between 0 and 3 minutes to allow other servers to finish their
+		// updates without running into a series of races
+		sleepDur := time.Duration(rand.Intn(3)*60) * time.Second
+		fmt.Printf("update was unsuccessful. sleeping for %d seconds.\n", sleepDur/time.Second)
+		time.Sleep(sleepDur)
 	}
-	updatedList, err := updateOwnRecord(list, cfg.OwnName)
-	if err != nil {
-		log.Fatal(errors.AddContext(err, "failed to update list"))
-	}
-	cleanList := removeOutdatedEntries(updatedList)
-	err = putServerList(db, cleanList, cfg.Tweak, rev+1)
-	if err != nil {
-		log.Fatal(errors.AddContext(err, "failed to update server list"))
-	}
+
+	// output the skylink. this serves as a confirmation of a successful run and
+	// as a handy way to get the skylink.
+	sl := skymodules.NewSkylinkV2(types.Ed25519PublicKey(pk), cfg.Tweak)
+	fmt.Printf("skylink updated successfully: %s\n", sl.String())
 }
