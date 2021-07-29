@@ -167,28 +167,37 @@ func main() {
 	// get the latest server list, update it and save it. then verify that we're
 	// in the list with a recent record. if that's not true sleep for a while
 	// and try again.
+	isRetryRun := false
 	for {
+		if isRetryRun {
+			// sleep between 0 and 3 minutes to allow other servers to finish their
+			// updates without running into a series of races
+			sleepDur := time.Duration(rand.Intn(3)*60) * time.Second
+			fmt.Printf("update was unsuccessful. sleeping for %d seconds.\n", sleepDur/time.Second)
+			time.Sleep(sleepDur)
+		}
 		list, rev, err := getServerList(db, cfg.Tweak)
 		if err != nil {
-			log.Fatal(errors.AddContext(err, "failed to get server list"))
+			fmt.Println(errors.AddContext(err, "failed to get server list"))
+			isRetryRun = true
+			continue
 		}
 		updatedList, err := updateOwnRecord(list, cfg.OwnName)
 		if err != nil {
-			log.Fatal(errors.AddContext(err, "failed to update list"))
+			fmt.Println(errors.AddContext(err, "failed to update list"))
+			isRetryRun = true
+			continue
 		}
 		cleanList := removeOutdatedEntries(updatedList)
 		err = putServerList(db, cleanList, cfg.Tweak, rev+1)
 		if err != nil {
-			log.Fatal(errors.AddContext(err, "failed to update server list"))
+			fmt.Println(errors.AddContext(err, "failed to update server list"))
+			isRetryRun = true
+			continue
 		}
 		if checkSuccess(db, cfg.Tweak, cfg.OwnName) {
 			break
 		}
-		// sleep between 0 and 3 minutes to allow other servers to finish their
-		// updates without running into a series of races
-		sleepDur := time.Duration(rand.Intn(3)*60) * time.Second
-		fmt.Printf("update was unsuccessful. sleeping for %d seconds.\n", sleepDur/time.Second)
-		time.Sleep(sleepDur)
 	}
 
 	// output the skylink. this serves as a confirmation of a successful run and
