@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/ro-tex/skydb"
 	"gitlab.com/NebulousLabs/errors"
 	"gitlab.com/SkynetLabs/skyd/node/api/client"
@@ -144,6 +145,10 @@ func getConfig() (config, error) {
 }
 
 func main() {
+	err := godotenv.Load(os.Args[1])
+	if err != nil {
+		log.Fatal(errors.AddContext(err, "failed to load .env"))
+	}
 	cfg, err := getConfig()
 	if err != nil {
 		log.Fatal(errors.AddContext(err, "failed to read config"))
