@@ -55,7 +55,7 @@ func putServerList(db *skydb.SkyDB, list []server, tweak [32]byte, rev uint64) e
 	if err != nil {
 		return errors.AddContext(err, "failed to marshal server list")
 	}
-	err = db.Write(data, tweak, rev+1)
+	err = db.Write(data, tweak, rev)
 	if err != nil {
 		return errors.AddContext(err, "failed to write to skydb")
 	}
@@ -172,7 +172,7 @@ func main() {
 		if isRetryRun {
 			// sleep between 0 and 3 minutes to allow other servers to finish their
 			// updates without running into a series of races
-			sleepDur := time.Duration(rand.Intn(3)*60) * time.Second
+			sleepDur := time.Duration(rand.Intn(3*60)) * time.Second
 			fmt.Printf("update was unsuccessful. sleeping for %d seconds.\n", sleepDur/time.Second)
 			time.Sleep(sleepDur)
 		}
