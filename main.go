@@ -4,7 +4,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"gitlab.com/NebulousLabs/fastrand"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"strings"
@@ -47,6 +49,7 @@ func getServerList(db *skydb.SkyDB, tweak [32]byte) ([]server, uint64, error) {
 	if err != nil {
 		return nil, 0, errors.AddContext(err, "failed to unmarshal server list")
 	}
+	fmt.Printf("got %d: %v\n", rev, servers)
 	return servers, rev, nil
 }
 
@@ -59,6 +62,7 @@ func putServerList(db *skydb.SkyDB, list []server, tweak [32]byte, rev uint64) e
 	if err != nil {
 		return errors.AddContext(err, "failed to write to skydb")
 	}
+	fmt.Printf("put %d: %v\n", rev, list)
 	return nil
 }
 
@@ -78,7 +82,7 @@ func updateOwnRecord(list []server, ownName string) ([]server, error) {
 
 func removeOutdatedEntries(list []server) []server {
 	cutoff := time.Now().AddDate(0, 0, -7)
-	updatedList := []server{}
+	var updatedList []server
 	for _, s := range list {
 		if s.LastAnnounce.After(cutoff) {
 			updatedList = append(updatedList, s)
@@ -172,6 +176,7 @@ func main() {
 		if isRetryRun {
 			// sleep between 0 and 3 minutes to allow other servers to finish their
 			// updates without running into a series of races
+			rand.Seed(int64(fastrand.Uint64n(math.MaxInt64)))
 			sleepDur := time.Duration(rand.Intn(3*60)) * time.Second
 			fmt.Printf("update was unsuccessful. sleeping for %d seconds.\n", sleepDur/time.Second)
 			time.Sleep(sleepDur)
@@ -195,9 +200,18 @@ func main() {
 			isRetryRun = true
 			continue
 		}
-		if checkSuccess(db, cfg.Tweak, cfg.OwnName) {
-			break
+		// We want to sleep here for a bit in order to give the system time to
+		// stabilize, otherwise we can run into a race where two machines write
+		// different data for the same revision and both get positive responses
+		// but only one of them gets selected as winner and gets their data
+		// persisted.
+		time.Sleep(3 * time.Second)
+		if !checkSuccess(db, cfg.Tweak, cfg.OwnName) {
+			fmt.Println("success check failed")
+			isRetryRun = true
+			continue
 		}
+		break
 	}
 
 	// output the skylink. this serves as a confirmation of a successful run and
