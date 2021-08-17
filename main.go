@@ -87,11 +87,16 @@ func putServerList(db *skydb.SkyDB, list []server, tweak [32]byte, rev uint64) e
 func updateOwnRecord(list []server, ownName string) ([]server, error) {
 	ip, err := getOwnIP()
 	if err != nil {
-		return nil, errors.AddContext(err, "failed to get own ip")
+		// The IP is not critical to the operation of the tool, so we will just
+		// skip setting it.
+		fmt.Println(errors.AddContext(err, "failed to get own ip").Error())
+		ip = ""
 	}
 	for i := range list {
 		if list[i].Name == ownName {
-			list[i].IP = ip
+			if ip != "" {
+				list[i].IP = ip
+			}
 			list[i].LastAnnounce = time.Now()
 			return list, nil
 		}
@@ -165,8 +170,7 @@ func getConfig() (config, error) {
 func getOwnIP() (string, error) {
 	resp, err := http.Get("https://api.ipify.org")
 	if err != nil || resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("failed to query api.ipify.org, status code %d", resp.StatusCode)
-		return "", errors.AddContext(err, msg)
+		return "", errors.AddContext(err, "failed to query api.ipify.org")
 	}
 	defer resp.Body.Close()
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
