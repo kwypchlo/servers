@@ -122,11 +122,11 @@ func removeOutdatedEntries(list []server) []server {
 func getConfig() (config, error) {
 	cfg := config{}
 
-	ownName := os.Getenv("PORTAL_NAME")
+	ownName := os.Getenv("SKYNET_SERVER_API")
 	if ownName == "" {
-		return config{}, errors.New("failed to get own name. is PORTAL_NAME env var defined?")
+		return config{}, errors.New("failed to get own name. is SKYNET_SERVER_API env var defined?")
 	}
-	cfg.OwnName = ownName
+	cfg.OwnName = strings.TrimPrefix(strings.TrimPrefix(ownName, "http://"), "https://")
 
 	entropyStr := os.Getenv("SERVERLIST_ENTROPY")
 	if entropyStr == "" {
