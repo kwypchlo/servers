@@ -4,17 +4,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"gitlab.com/NebulousLabs/fastrand"
+	"io/ioutil"
 	"log"
 	"math"
 	"math/rand"
+	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/ro-tex/skydb"
 	"gitlab.com/NebulousLabs/errors"
+	"gitlab.com/NebulousLabs/fastrand"
 	"gitlab.com/SkynetLabs/skyd/node/api/client"
 	"gitlab.com/SkynetLabs/skyd/skymodules"
 	"go.sia.tech/siad/crypto"
@@ -22,6 +25,14 @@ import (
 )
 
 type (
+	// config holds the entire configuration of the tool:
+	// * Entropy and Tweak are the parameters used to access the correct record
+	// in SkyDB. These should be the same on all machines who want to appear on
+	// the same list.
+	// * OwnName is the name of the server in the list, e.g. dev1.siasky.dev.
+	// * SkydAddress is the IP:PORT combination on which we can talk to the
+	// local skyd.
+	// * SkydApiPassword is the API password fo the local skyd.
 	config struct {
 		Entropy         [32]byte
 		Tweak           [32]byte
@@ -30,12 +41,15 @@ type (
 		SkydApiPassword string
 	}
 
+	// server describes the information we collect for each server on the list.
 	server struct {
 		Name         string    `json:"name"`
+		IP           string    `json:"ip"`
 		LastAnnounce time.Time `json:"last_announce"`
 	}
 )
 
+// getServerList loads the server list from SkyDB.
 func getServerList(db *skydb.SkyDB, tweak [32]byte) ([]server, uint64, error) {
 	b, rev, err := db.Read(tweak)
 	if err != nil && strings.Contains(err.Error(), "skydb entry not found") {
@@ -53,6 +67,7 @@ func getServerList(db *skydb.SkyDB, tweak [32]byte) ([]server, uint64, error) {
 	return servers, rev, nil
 }
 
+// putServerList stores the server list in SkyDB.
 func putServerList(db *skydb.SkyDB, list []server, tweak [32]byte, rev uint64) error {
 	data, err := json.Marshal(list)
 	if err != nil {
@@ -66,20 +81,31 @@ func putServerList(db *skydb.SkyDB, list []server, tweak [32]byte, rev uint64) e
 	return nil
 }
 
+// updateOwnRecord adds our information to the list, removing the existing entry
+// if it exists. If the server has multiple IP addresses, the address in the
+// list might change between executions.
 func updateOwnRecord(list []server, ownName string) ([]server, error) {
+	ip, err := getOwnIP()
+	if err != nil {
+		return nil, errors.AddContext(err, "failed to get own ip")
+	}
 	for i := range list {
 		if list[i].Name == ownName {
+			list[i].IP = ip
 			list[i].LastAnnounce = time.Now()
 			return list, nil
 		}
 	}
 	self := server{
 		Name:         ownName,
+		IP:           ip,
 		LastAnnounce: time.Now(),
 	}
 	return append(list, self), nil
 }
 
+// removeOutdatedEntries prunes all entries in the list that haven't been
+// updated in 7 days.
 func removeOutdatedEntries(list []server) []server {
 	cutoff := time.Now().AddDate(0, 0, -7)
 	var updatedList []server
@@ -91,6 +117,8 @@ func removeOutdatedEntries(list []server) []server {
 	return updatedList
 }
 
+// getConfig reads all the configuration data for the service. This data comes
+// mostly from environment variables.
 func getConfig() (config, error) {
 	cfg := config{}
 
@@ -131,6 +159,29 @@ func getConfig() (config, error) {
 	}
 
 	return cfg, nil
+}
+
+// getOwnIP uses an external service in order to discover our external IP.
+func getOwnIP() (string, error) {
+	resp, err := http.Get("https://api.ipify.org")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		msg := fmt.Sprintf("failed to query api.ipify.org, status code %d", resp.StatusCode)
+		return "", errors.AddContext(err, msg)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.AddContext(err, "failed to read api.ipify.org response")
+	}
+	ip := string(bodyBytes)
+	// This regex only detects IPv4. We might need to expand it in the future,
+	// so it supports IPv6 as well.
+	match, err := regexp.MatchString("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$", ip)
+	if err != nil || !match {
+		msg := fmt.Sprintf("invalid ip received '%s'", ip)
+		return "", errors.AddContext(err, msg)
+	}
+	return ip, nil
 }
 
 // checkSuccess fetches the list of servers and ensures that this server's
