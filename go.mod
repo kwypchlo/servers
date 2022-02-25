@@ -8,7 +8,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/klauspost/reedsolomon v1.9.13 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
-	github.com/ro-tex/skydb v0.0.3
+	github.com/ro-tex/skydb v0.0.4
 	github.com/tus/tusd v1.6.0 // indirect
 	gitlab.com/NebulousLabs/errors v0.0.0-20200929122200-06c536cf6975
 	gitlab.com/NebulousLabs/fastrand v0.0.0-20181126182046-603482d69e40
